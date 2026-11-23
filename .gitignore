@@ -1,0 +1,13 @@
+langchain-env/
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.langgraph_api/
+build/
+dist/
+.DS_Store
+/NOTES.md

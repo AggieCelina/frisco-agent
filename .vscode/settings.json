@@ -1,0 +1,13 @@
+{
+  "python.defaultInterpreterPath": "${workspaceFolder}/langchain-env/bin/python",
+  "python.terminal.activateEnvironment": true,
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/*.egg-info": true,
+    "langchain-env": true
+  },
+  "search.exclude": {
+    "langchain-env/**": true,
+    "requirements.lock.txt": true
+  }
+}
