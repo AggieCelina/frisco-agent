@@ -57,12 +57,19 @@ Select graph `frisco` in Studio's **Graph mode** (it is not a chat graph),
 or invoke it through the API with this input:
 
 ```json
-{"ingredients_text": "600 g Greek yogurt\n2 eggs\nsalt to taste"}
+{"ingredients_text": "4 x tofu\n600 g Greek yogurt"}
 ```
 
 The output contains `ingredients` and `product_searches`. Each search records
-the ingredient, the Polish query, and up to five candidates with a product ID
-and display name. An empty candidate list means the catalog returned no matches.
+the ingredient, the Polish query, requested quantity and unit, and up to five
+candidates with an ID, name, package size and proposed pack count. For
+`4 x tofu`, each candidate has `pack_count: 4`. For `600 g Greek yogurt`, a
+400 g tub has `pack_count: 2`. Each candidate includes the catalog price for one
+pack (`pack_price_grosze`) and the estimated cost of the proposed packs
+(`total_grosze`). Both use whole grosze, with 100 grosze to 1 zł. The total is
+null if either price or count is unknown. Package sizes use grams or millilitres when
+known. Unknown sizes and counts that cannot be calculated are returned as null.
+An empty candidate list means the catalog returned no matches.
 A failed search fails the run. The graph only reads the catalog.
 
 Run offline checks with `python -m pytest -q` from the activated environment.

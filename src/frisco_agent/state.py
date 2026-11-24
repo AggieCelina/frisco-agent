@@ -21,15 +21,31 @@ class IngredientData(TypedDict):
     unit: str | None
 
 
+class PackageSize(TypedDict):
+    quantity: float
+    unit: str
+
+
 class ProductCandidate(TypedDict):
     product_id: str
     name: str
+    package_size: NotRequired[PackageSize | None]
+    # Money stays in whole grosze (100 grosze = 1 zł).
+    pack_price_grosze: NotRequired[int | None]
+
+
+class ShoppingCandidate(ProductCandidate):
+    # Depends on both the catalog product and the user's requested quantity.
+    pack_count: int | None
+    total_grosze: int | None
 
 
 class ProductSearch(TypedDict):
     ingredient: str
     query: str
-    candidates: list[ProductCandidate]
+    quantity: float | None
+    unit: str | None
+    candidates: list[ShoppingCandidate]
 
 
 class GraphOutput(TypedDict):

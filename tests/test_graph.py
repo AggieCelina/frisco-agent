@@ -9,7 +9,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from frisco_agent.graph import graph
+from frisco_agent.graph import graph, packs_needed
+from frisco_agent.integrations.frisco import read_package_size, read_pack_price
 from frisco_agent.models import Ingredient, ShoppingList
 
 
@@ -23,7 +24,9 @@ def test_graph_returns_serializable_ingredients():
     # external MCP tool are stand-ins, so the test needs no account or network.
     tool = AsyncMock()
     tool.name = "products_search"
-    rows = [{"productId": 17, "product": {"name": {"pl": "Jogurt naturalny"}}}]
+    rows = [{"productId": 17, "product": {"name": {"pl": "Jogurt naturalny"},
+                                         "grammage": 0.4, "unitOfMeasure": "Kilogram",
+                                         "price": {"price": 4.35}}}]
     tool.ainvoke.side_effect = [
         SimpleNamespace(status="success", artifact={"structured_content": {
             "ok": True, "data": {"api_response": {"products": products}}
@@ -45,12 +48,34 @@ def test_graph_returns_serializable_ingredients():
         "jogurt grecki", "sól",
     ]
     assert result["product_searches"] == [
-        {"ingredient": "Greek yogurt", "query": "jogurt grecki",
-         "candidates": [{"product_id": "17", "name": "Jogurt naturalny"}]},
-        {"ingredient": "salt", "query": "sól", "candidates": []},
+        {"ingredient": "Greek yogurt", "query": "jogurt grecki", "quantity": 600, "unit": "g",
+         "candidates": [{"product_id": "17", "name": "Jogurt naturalny",
+                         "package_size": {"quantity": 400, "unit": "g"}, "pack_count": 2,
+                         "pack_price_grosze": 435, "total_grosze": 870}]},
+        {"ingredient": "salt", "query": "sól", "quantity": None, "unit": None, "candidates": []},
     ]
     json.dumps(result)
     parser.ainvoke.assert_awaited_once()
+
+
+def test_explicit_pack_count_survives_unknown_size():
+    assert packs_needed(4, "pack", None) == 4
+    assert packs_needed(400, "g", None) is None
+
+
+def test_missing_price_is_distinct_from_a_zero_price():
+    assert read_pack_price({}) is None
+    assert read_pack_price({"price": {"price": -1}}) is None
+    assert read_pack_price({"price": {"price": 0}}) == 0
+
+
+def test_package_volume_and_incompatible_units():
+    size = read_package_size({"grammage": 0.25, "unitOfMeasure": "Litre"})
+    assert size == {"quantity": 250, "unit": "ml"}
+    assert packs_needed(0.75, "l", size) == 3
+    assert packs_needed(400, "g", size) is None
+    assert read_package_size({"grammage": 1, "unitOfMeasure": "Piece"}) is None
+    assert read_package_size({}) is None
 
 
 @pytest.mark.parametrize("text", [None, "", "   "])
