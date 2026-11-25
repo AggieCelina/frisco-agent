@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from frisco_agent.graph import graph, packs_needed
+from frisco_agent.graph import consolidate_ingredients, graph, packs_needed
 from frisco_agent.integrations.frisco import read_package_size, read_pack_price
 from frisco_agent.models import Ingredient, ShoppingList
 
@@ -61,6 +61,39 @@ def test_graph_returns_serializable_ingredients():
 def test_explicit_pack_count_survives_unknown_size():
     assert packs_needed(4, "pack", None) == 4
     assert packs_needed(400, "g", None) is None
+
+
+def test_two_recipes_search_once_for_five_eggs():
+    parser = AsyncMock()
+    parser.ainvoke.return_value = ShoppingList(ingredients=[
+        Ingredient(name="eggs", search_query=query, quantity=count, unit="piece")
+        for query, count in [("jajka", 2), ("  Jajka  ", 3)]
+    ])
+    with (
+        patch("frisco_agent.graph.create_parser", return_value=parser),
+        patch("frisco_agent.graph.open_product_search") as connection,
+        patch("frisco_agent.graph.find_candidates", new_callable=AsyncMock, return_value=[]) as search,
+    ):
+        result = asyncio.run(graph.ainvoke({"ingredients_text": "Omelette: 2 eggs. Cake: 3 eggs."}))
+    assert [item["quantity"] for item in result["ingredients"]] == [2, 3]
+    assert result["shopping_list"] == [{**result["ingredients"][0], "quantity": 5}]
+    assert result["product_searches"][0]["quantity"] == 5
+    search.assert_awaited_once_with(connection.return_value.__aenter__.return_value, "jajka")
+
+
+def test_only_compatible_known_requirements_merge():
+    entries = [
+        ("jogurt naturalny", 500, "g"), ("jogurt naturalny", 0.5, "kg"),
+        ("jajka", 2, "piece"), ("jajka", 1, "pack"),
+        ("tofu naturalne", 200, "g"), ("tofu wędzone", 200, "g"),
+        ("mąka", 100, "g"), ("mąka", None, "g"),
+        ("mleko", 0.25, "l"), ("mleko", 150, "ml"), ("mleko", 50, "g"),
+    ]
+    ingredients = [dict(name=q, search_query=q, quantity=n, unit=u) for q, n, u in entries]
+    items = consolidate_ingredients({"ingredients": ingredients})["shopping_list"]
+    assert [(i["name"], i["quantity"], i["unit"]) for i in items] == [
+        ("jogurt naturalny", 1000, "g"), *entries[2:8], ("mleko", 400, "ml"), entries[-1],
+    ]
 
 
 def test_missing_price_is_distinct_from_a_zero_price():

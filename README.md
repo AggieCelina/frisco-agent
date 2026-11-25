@@ -1,7 +1,9 @@
 # Frisco agent
 
-Turn pasted recipe ingredients into a reviewed Frisco shopping basket.
-Checkout remains manual. The graph extracts ingredients and searches the Frisco catalog. Product matching, basket operations, and the shopping UI are still pending.
+Paste recipe text, a shopping note such as `4 x tofu and toilet paper`, or both into
+`ingredients_text`. The graph extracts shopping items and searches the Frisco catalog.
+Recipe links and photo uploads are planned. For now, paste the text itself.
+Checkout remains manual. Product matching, basket operations, and the shopping UI are still pending.
 
 ## Environment
 
@@ -43,9 +45,12 @@ may be a Go or Node process; it need not share this Python environment.
 
 ## Minimal graph
 
-Flow: `START → parse_ingredients → search_products → END`. The parsing node
+Flow: `START → parse_ingredients → consolidate_ingredients → search_products → END`. The parsing node
 makes one OpenAI request to extract ingredients and Polish search phrases.
-The search node invokes the Frisco MCP tool once per ingredient.
+The consolidation node combines known amounts when their Polish search phrases match
+after ignoring case and extra whitespace. It converts kg to g and l to ml, and
+keeps individual pieces, packs, and unknown amounts separate. The search node
+invokes the Frisco MCP tool once per resulting shopping-list entry.
 
 After activating the environment, start the local development server:
 
@@ -60,15 +65,22 @@ or invoke it through the API with this input:
 {"ingredients_text": "4 x tofu\n600 g Greek yogurt"}
 ```
 
-The output contains `ingredients` and `product_searches`. Each search records
+The output contains the original `ingredients`, consolidated `shopping_list`,
+and `product_searches`. For example, two recipes calling for 2 eggs and 3 eggs
+produce one shopping-list entry for 5 pieces. Each search records
 the ingredient, the Polish query, requested quantity and unit, and up to five
 candidates with an ID, name, package size and proposed pack count. For
 `4 x tofu`, each candidate has `pack_count: 4`. For `600 g Greek yogurt`, a
 400 g tub has `pack_count: 2`. Each candidate includes the catalog price for one
 pack (`pack_price_grosze`) and the estimated cost of the proposed packs
 (`total_grosze`). Both use whole grosze, with 100 grosze to 1 zł. The total is
-null if either price or count is unknown. Package sizes use grams or millilitres when
-known. Unknown sizes and counts that cannot be calculated are returned as null.
+null if either price or count is unknown. Package sizes use grams, millilitres,
+or individual eggs when an egg-carton label explicitly gives its contents.
+Unknown or conflicting carton counts stay null. For a request in individual
+eggs, comparable cartons show leftovers and price per egg (rounded to the
+nearest grosz). For a generic egg search such as `jajka`, `lowest_cost_carton_id`
+identifies the cheapest covering option among the returned cartons with known
+counts and prices. Ties favor fewer leftovers. Each option uses one carton size.
 An empty candidate list means the catalog returned no matches.
 A failed search fails the run. The graph only reads the catalog.
 

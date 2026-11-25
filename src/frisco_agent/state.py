@@ -38,6 +38,8 @@ class ShoppingCandidate(ProductCandidate):
     # Depends on both the catalog product and the user's requested quantity.
     pack_count: int | None
     total_grosze: int | None
+    leftover_pieces: NotRequired[int]
+    price_per_piece_grosze: NotRequired[int | None]
 
 
 class ProductSearch(TypedDict):
@@ -46,12 +48,14 @@ class ProductSearch(TypedDict):
     quantity: float | None
     unit: str | None
     candidates: list[ShoppingCandidate]
+    lowest_cost_carton_id: NotRequired[str | None]
 
 
 class GraphOutput(TypedDict):
     """Fields returned to the caller after the graph finishes."""
 
     ingredients: list[IngredientData]
+    shopping_list: list[IngredientData]
     product_searches: list[ProductSearch]
 
 

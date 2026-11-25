@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import re
 from contextlib import AsyncExitStack, asynccontextmanager
 from decimal import Decimal
 from importlib import import_module
@@ -46,13 +47,46 @@ async def open_product_search():
         raise RuntimeError("The Frisco MCP server did not advertise products_search.")
 
 
+# The Frisco category tree places egg cartons under 19118 ("Jaja").
+EGG_CATEGORY = "19118"
+EGG_COUNT = re.compile(r"\b(\d+)\s*(?:szt(?:uk[aiy]?)?|pcs?|pieces?|eggs?|jaj(?:a|ek)?)\b", re.I)
+
+
+def read_egg_carton(product: dict) -> PackageSize | None:
+    category = product.get("primaryCategory") or {}
+    path = str(category.get("parentPath", "")).split(",")
+    if EGG_CATEGORY not in [str(category.get("categoryId")), str(category.get("parentId")), *path]:
+        return None
+
+    # Both translations describe the same pack. An omitted count is fine, but
+    # contradictory counts, ranges and multipacks need further product details.
+    names = product.get("name")
+    labels = names.values() if isinstance(names, dict) else [names]
+    counts = set()
+    for label in labels:
+        if not isinstance(label, str):
+            continue
+        matches = list(EGG_COUNT.finditer(label))
+        if not matches:
+            continue
+        if re.search(r"\d\s*[-–/+×x.,]\s*\d|\d\s*(?:szt\.?|pcs\.?)\s*[+×x]\s*\d", label, re.I):
+            return None
+        counts.update(int(match[1]) for match in matches)
+    if len(counts) == 1:
+        count = counts.pop()
+        if count > 0:
+            return PackageSize(quantity=count, unit="piece")
+    return None
+
+
 def read_package_size(product: dict) -> PackageSize | None:
-    """Read the weight or volume of one sale item from the catalog."""
+    """Read the weight, volume or verified egg count of one sale item."""
+    if product.get("unitOfMeasure") == "Piece":
+        return read_egg_carton(product)
     amount = product.get("grammage")
     units = {"Kilogram": ("g", 1000), "Gram": ("g", 1),
              "Litre": ("ml", 1000), "Millilitre": ("ml", 1)}
     measure = units.get(product.get("unitOfMeasure"))
-    # A carton of ten eggs may say "1 Piece": that counts cartons, not eggs.
     if measure is None or type(amount) not in (float, int) or not isfinite(amount) or amount <= 0:
         return None
     unit, multiplier = measure
@@ -84,8 +118,13 @@ async def find_candidates(tool, query: str) -> list[ProductCandidate]:
         if not product_id or not isinstance(name, str) or not name.strip():
             raise ValueError("Frisco returned a product without an ID or display name.")
         product = row["product"]
+        # Unavailable cartons cannot cover a shopping requirement.
+        size = read_package_size(product)
+        unavailable = product.get("isAvailable") is False or product.get("isStocked") is False
+        if size and size["unit"] == "piece" and unavailable:
+            continue
         candidates.append(ProductCandidate(product_id=str(product_id), name=name,
-                                           package_size=read_package_size(product),
+                                           package_size=size,
                                            pack_price_grosze=read_pack_price(product)))
     return candidates
 
