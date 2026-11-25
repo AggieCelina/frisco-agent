@@ -1,4 +1,4 @@
-"""Parse recipe ingredients, then search the Frisco catalog."""
+"""Turn shopping text into reviewed and verified grocery basket updates."""
 
 import os
 from decimal import Decimal, ROUND_HALF_UP
@@ -7,6 +7,7 @@ from math import ceil, isfinite
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 
+from frisco_agent.basket import add_to_basket, after_review, review_selection
 from frisco_agent.integrations.frisco import find_candidates, open_product_search
 from frisco_agent.models import ShoppingList
 from frisco_agent.state import GraphInput, GraphOutput, IngredientData, PackageSize, ShoppingState
@@ -95,7 +96,7 @@ async def parse_ingredients(state: ShoppingState) -> dict:
     # model_dump() converts Pydantic objects into ordinary Python dictionaries
     # and lists for graph state and API output. With no custom reducer, this
     # replaces the state's ingredients list rather than appending to it.
-    return {"ingredients": parsed.model_dump()["ingredients"]}
+    return {"ingredients": parsed.model_dump()["ingredients"], "basket_plan": [], "basket_result": None}
 
 
 def consolidate_ingredients(state: ShoppingState) -> dict:
@@ -204,7 +205,11 @@ builder.add_edge(START, "parse_ingredients")
 builder.add_node("search_products", search_products)
 builder.add_edge("parse_ingredients", "consolidate_ingredients")
 builder.add_edge("consolidate_ingredients", "search_products")
-builder.add_edge("search_products", END)
+builder.add_node("review_selection", review_selection)
+builder.add_node("add_to_basket", add_to_basket)
+builder.add_edge("search_products", "review_selection")
+builder.add_conditional_edges("review_selection", after_review)
+builder.add_edge("add_to_basket", END)
 # Agent Server supplies persistence; do not hardcode a checkpointer here.
 # compile() validates the graph structure and creates the runnable object.
 # It does not call OpenAI. langgraph.json points to this exported `graph`.

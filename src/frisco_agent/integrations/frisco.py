@@ -1,6 +1,7 @@
 """Connect the recipe graph to the local Frisco MCP process."""
 
 import asyncio
+import json
 import os
 import re
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -16,13 +17,17 @@ from langsmith import tracing_context
 from frisco_agent.state import PackageSize, ProductCandidate
 
 
-@asynccontextmanager
-async def open_product_search():
-    """Start one server for this batch of ingredients and release it afterwards."""
+def frisco_binary() -> Path:
     # The default matches our two sibling project folders. Other installations
     # can supply an absolute binary path in .env.
     default = Path(__file__).parents[4] / "frisco-mcp/bin/frisco"
-    binary = Path(os.getenv("FRISCO_MCP_BINARY") or default).expanduser()
+    return Path(os.getenv("FRISCO_MCP_BINARY") or default).expanduser()
+
+
+@asynccontextmanager
+async def open_frisco_tool(name: str):
+    """Start the local MCP server and expose only the requested tool."""
+    binary = frisco_binary()
     # MCP validates the first tool result with jsonschema. Its first import
     # reads bundled schema files, so load it off the server's event loop.
     await asyncio.to_thread(import_module, "jsonschema")
@@ -39,12 +44,15 @@ async def open_product_search():
                     "Set FRISCO_MCP_BINARY to the path of an executable Frisco CLI."
                 ) from exc
             raise
-        # The server advertises other tools too. This node only needs search.
         for tool in await adapter.list_tools():
-            if tool.name == "products_search":
+            if tool.name == name:
                 yield tool
                 return
-        raise RuntimeError("The Frisco MCP server did not advertise products_search.")
+        raise RuntimeError(f"The Frisco MCP server did not advertise {name}.")
+
+
+def open_product_search():
+    return open_frisco_tool("products_search")
 
 
 # The Frisco category tree places egg cartons under 19118 ("Jaja").
@@ -93,24 +101,65 @@ def read_package_size(product: dict) -> PackageSize | None:
     return PackageSize(quantity=float(Decimal(str(amount)) * multiplier), unit=unit)
 
 
-async def find_candidates(tool, query: str) -> list[ProductCandidate]:
-    """Invoke the LangChain tool and keep the catalog fields our graph needs."""
-    # Passing a tool call gives us a ToolMessage with structured MCP data.
-    # A raw response includes session-related metadata. Keep it out of traces.
+async def call_frisco(tool, arguments: dict) -> dict:
+    """Keep raw Frisco responses (including account metadata) out of graph traces."""
     with tracing_context(enabled=False):
         message = await tool.ainvoke({
-            "type": "tool_call", "name": tool.name, "id": "product-search",
-            "args": {"search": query, "page_size": 5},
+            "type": "tool_call", "name": tool.name, "id": tool.name, "args": arguments,
         }, config={"callbacks": []})
     if message.status == "error" or not message.artifact:
-        raise RuntimeError("Frisco product search failed. Check the saved Frisco session.")
+        raise RuntimeError(f"Frisco {tool.name} failed. Check the saved Frisco session.")
     payload = message.artifact["structured_content"]
     if not payload.get("ok"):
-        raise RuntimeError("Frisco reported an unsuccessful product search.")
+        raise RuntimeError(f"Frisco reported an unsuccessful {tool.name} call.")
+    return payload["data"]["api_response"]
+
+
+async def read_basket(tool) -> dict[str, int]:
+    """Read product IDs and quantities only. An unreadable cart must block a write."""
+    response = await call_frisco(tool, {})
+    rows = response.get("products")
+    if not isinstance(rows, list):
+        raise ValueError("Frisco returned a basket without a products list.")
+    counts = {}
+    for row in rows:
+        product_id = row.get("productId") or (row.get("product") or {}).get("productId")
+        quantity = row.get("quantity")
+        if type(product_id) not in (int, str) or not str(product_id).strip():
+            raise ValueError("A basket line has no product ID.")
+        if type(quantity) is not int or quantity < 0 or str(product_id) in counts:
+            raise ValueError("A basket line has an ambiguous quantity.")
+        counts[str(product_id)] = quantity
+    return {pid: qty for pid, qty in counts.items() if qty > 0}
+
+
+async def set_basket_quantities(targets: dict[str, int]) -> bool:
+    """Pass final counts to the CLI, which merges them with its own fresh cart read."""
+    lines = [{"product_id": pid, "quantity": qty} for pid, qty in targets.items()]
+    process = await asyncio.create_subprocess_exec(
+        str(frisco_binary()), "cart", "add-batch", "--file", "/dev/stdin", "--format", "json",
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        await asyncio.wait_for(process.communicate(json.dumps(lines).encode()), timeout=60)
+    finally:
+        if process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            await process.wait()
+    return process.returncode == 0
+
+
+async def find_candidates(tool, query: str) -> list[ProductCandidate]:
+    """Invoke the LangChain tool and keep the catalog fields our graph needs."""
+    response = await call_frisco(tool, {"search": query, "page_size": 5})
     # An empty products array is a valid search with zero matches. A missing
     # field is a different outcome and should surface as a response format error.
     candidates = []
-    for row in payload["data"]["api_response"]["products"]:
+    for row in response["products"]:
         name = row["product"]["name"]
         if isinstance(name, dict):
             name = name.get("pl") or name.get("en")
@@ -118,10 +167,10 @@ async def find_candidates(tool, query: str) -> list[ProductCandidate]:
         if not product_id or not isinstance(name, str) or not name.strip():
             raise ValueError("Frisco returned a product without an ID or display name.")
         product = row["product"]
-        # Unavailable cartons cannot cover a shopping requirement.
+        # Only offer products the catalog allows the user to buy.
         size = read_package_size(product)
         unavailable = product.get("isAvailable") is False or product.get("isStocked") is False
-        if size and size["unit"] == "piece" and unavailable:
+        if unavailable:
             continue
         candidates.append(ProductCandidate(product_id=str(product_id), name=name,
                                            package_size=size,

@@ -54,6 +54,8 @@ def test_graph_returns_serializable_ingredients():
                          "pack_price_grosze": 435, "total_grosze": 870}]},
         {"ingredient": "salt", "query": "sól", "quantity": None, "unit": None, "candidates": []},
     ]
+    pause, = result.pop("__interrupt__")
+    assert pause.value["rows"][0]["options"][0]["pack_count"] == 2
     json.dumps(result)
     parser.ainvoke.assert_awaited_once()
 

@@ -51,19 +51,29 @@ class ProductSearch(TypedDict):
     lowest_cost_carton_id: NotRequired[str | None]
 
 
+class BasketLine(TypedDict):
+    product_id: str
+    name: str
+    packs_to_add: int
+    before: int
+    target: int
+
+
+class BasketResult(TypedDict):
+    status: str
+    lines: list[BasketLine]
+
+
 class GraphOutput(TypedDict):
     """Fields returned to the caller after the graph finishes."""
 
     ingredients: list[IngredientData]
     shopping_list: list[IngredientData]
     product_searches: list[ProductSearch]
+    basket_result: NotRequired[BasketResult | None]
 
 
 class ShoppingState(GraphInput, GraphOutput):
-    """Combined internal state: original text plus extracted ingredients.
+    """The reviewed targets are checkpointed before the node that writes to Frisco."""
 
-    Inheriting from both schemas collects their fields. The ingredients field
-    is populated by our node during execution; the caller need not supply it.
-    `pass` means this class adds no further fields or behavior.
-    """
-    pass
+    basket_plan: list[BasketLine]
